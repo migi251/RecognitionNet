@@ -90,7 +90,8 @@ class Model(nn.Module):
                 d_model=self.SequenceModeling_output,
                 d_word_vec=self.SequenceModeling_output,
                 d_inner=opt.d_inner_hid,
-                n_layers=opt.n_layers,
+                n_layers_enc=opt.n_layers_enc,
+                n_layers_dec=opt.n_layers_dec,
                 n_head=opt.n_head,
                 dropout=opt.dropout
             )

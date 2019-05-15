@@ -80,7 +80,8 @@ class Encoder(nn.Module):
         #     n_src_vocab, d_word_vec, padding_idx=Constants.PAD)
 
         self.position_enc = nn.Embedding.from_pretrained(
-            get_sinusoid_encoding_table(self.n_position, d_word_vec, padding_idx=0),
+            get_sinusoid_encoding_table(
+                self.n_position, d_word_vec, padding_idx=0),
             freeze=True)
 
         self.layer_stack = nn.ModuleList([
@@ -104,8 +105,8 @@ class Encoder(nn.Module):
                 enc_output,
                 non_pad_mask=None,
                 slf_attn_mask=None)
-                # non_pad_mask=non_pad_mask,
-                # slf_attn_mask=slf_attn_mask)
+            # non_pad_mask=non_pad_mask,
+            # slf_attn_mask=slf_attn_mask)
             if return_attns:
                 enc_slf_attn_list += [enc_slf_attn]
 
@@ -161,7 +162,7 @@ class Decoder(nn.Module):
                 non_pad_mask=non_pad_mask,
                 slf_attn_mask=slf_attn_mask,
                 dec_enc_attn_mask=None)
-                # dec_enc_attn_mask=dec_enc_attn_mask)
+            # dec_enc_attn_mask=dec_enc_attn_mask)
 
             if return_attns:
                 dec_slf_attn_list += [dec_slf_attn]
@@ -179,7 +180,7 @@ class Transformer(nn.Module):
             self,
             n_src_vocab, n_tgt_vocab, len_max_seq_enc, len_max_seq_dec,
             d_word_vec=512, d_model=512, d_inner=2048,
-            n_layers=6, n_head=8, d_k=64, d_v=64, dropout=0.1,
+            n_layers_enc=6, n_layers_dec=6, n_head=8, d_k=64, d_v=64, dropout=0.1,
             tgt_emb_prj_weight_sharing=True,
             emb_src_tgt_weight_sharing=True):
 
@@ -188,13 +189,13 @@ class Transformer(nn.Module):
         self.encoder = Encoder(
             n_src_vocab=n_src_vocab, len_max_seq=len_max_seq_enc,
             d_word_vec=d_word_vec, d_model=d_model, d_inner=d_inner,
-            n_layers=n_layers, n_head=n_head, d_k=d_k, d_v=d_v,
+            n_layers=n_layers_enc, n_head=n_head, d_k=d_k, d_v=d_v,
             dropout=dropout)
 
         self.decoder = Decoder(
             n_tgt_vocab=n_tgt_vocab, len_max_seq=len_max_seq_dec,
             d_word_vec=d_word_vec, d_model=d_model, d_inner=d_inner,
-            n_layers=n_layers, n_head=n_head, d_k=d_k, d_v=d_v,
+            n_layers=n_layers_dec, n_head=n_head, d_k=d_k, d_v=d_v,
             dropout=dropout)
 
         self.tgt_word_prj = nn.Linear(d_model, n_tgt_vocab, bias=False)
@@ -221,7 +222,8 @@ class Transformer(nn.Module):
         if is_train:
             tgt_seq, tgt_pos = tgt_seq[:, :-1], tgt_pos[:, :-1]
             enc_output, *_ = self.encoder(src_seq, src_pos)
-            dec_output, *_ = self.decoder(tgt_seq, tgt_pos, src_seq, enc_output)
+            dec_output, * \
+                _ = self.decoder(tgt_seq, tgt_pos, src_seq, enc_output)
             seq_logit = self.tgt_word_prj(dec_output) * self.x_logit_scale
             return seq_logit
         else:
@@ -234,15 +236,16 @@ class Transformer(nn.Module):
             if tgt_pos is not None:
                 pos = tgt_pos
             else:
-                pos = torch.arange(1,num_steps+1,dtype = torch.long,device ='cuda').expand(batch_size,-1)
+                pos = torch.arange(
+                    1, num_steps+1, dtype=torch.long, device='cuda').expand(batch_size, -1)
             ys = torch.zeros(batch_size, num_steps+1).long().cuda()
             ys[:, 0] = Constants.BOS
             for i in range(num_steps):
-                out, *_ = self.decoder(ys[:,:i+1],
-                                       pos[:,:i+1], src_seq, enc_output)
+                out, *_ = self.decoder(ys[:, :i+1],
+                                       pos[:, :i+1], src_seq, enc_output)
                 prob = self.tgt_word_prj(out) * self.x_logit_scale
                 seq_logit[:, i, :] = prob[:, -1, :]
                 _, next_word = torch.max(prob[:, -1, :], dim=1)
-                ys[:,i+1] = next_word
-                
+                ys[:, i+1] = next_word
+
             return seq_logit
