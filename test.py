@@ -9,7 +9,7 @@ import torch.utils.data
 import numpy as np
 from nltk.metrics.distance import edit_distance
 
-from utils import CTCLabelConverter, AttnLabelConverter, Averager
+from utils import CTCLabelConverter, AttnLabelConverter, Averager, TransformerLabelConverter
 from dataset import hierarchical_dataset, AlignCollate
 from model import Model
 
@@ -79,6 +79,9 @@ def validation(model, criterion, evaluation_loader, converter, opt):
     infer_time = 0
     valid_loss_avg = Averager()
 
+    if 'Transformer' in opt.Prediction:
+        text_pos = torch.arange(1, max_length+2, dtype=torch.long, device='cuda').expand(evaluation_loader.batch_size, -1)
+
     for i, (cpu_images, cpu_texts) in enumerate(evaluation_loader):
         batch_size = cpu_images.size(0)
         length_of_data = length_of_data + batch_size
@@ -112,12 +115,13 @@ def validation(model, criterion, evaluation_loader, converter, opt):
             preds = preds.transpose(1, 0).contiguous().view(-1)
             sim_preds = converter.decode(preds.data, preds_size.data)
         elif 'Transformer' in opt.Prediction:
-            text_pos = torch.arange(1,max_length+2,dtype = torch.long,device ='cuda').expand(batch_size,-1)
-            preds = model(image, text_for_pred, is_train=False,tgt_pos=text_pos)
+            batch_text_pos = text_pos[:batch_size]
+            preds = model(image, text_for_pred,
+                          is_train=False, tgt_pos=batch_text_pos)
             forward_time = time.time() - start_time
             # print('test pred',preds[0].size(),text_for_loss.shape[1] - 1)
             preds = preds[:, :text_for_loss.shape[1] - 1, :]
-            
+
             target = text_for_loss[:, 1:]  # without [GO] Symbol
             # print('pred',preds.size(),target.size())
             # print('pred[0]',preds[0],target[0])
@@ -137,7 +141,7 @@ def validation(model, criterion, evaluation_loader, converter, opt):
             preds = model(image, text_for_pred, is_train=False)
             forward_time = time.time() - start_time
             preds = preds[:, :text_for_loss.shape[1] - 1, :]
-            
+
             target = text_for_loss[:, 1:]  # without [GO] Symbol
             cost = criterion(preds.contiguous().view(-1,
                                                      preds.shape[-1]), target.contiguous().view(-1))
@@ -172,6 +176,8 @@ def test(opt):
     """ model configuration """
     if 'CTC' in opt.Prediction:
         converter = CTCLabelConverter(opt.character)
+    elif 'Transformer' in opt.Prediction:
+        converter = TransformerLabelConverter(opt.character)
     else:
         converter = AttnLabelConverter(opt.character)
     opt.num_class = len(converter.character)
@@ -236,10 +242,10 @@ if __name__ == '__main__':
                         help="path to saved_model to evaluation")
     """ Data processing """
     parser.add_argument('--batch_max_length', type=int,
-                        default=30, help='maximum-label-length')
-    parser.add_argument('--imgH', type=int, default=64,
+                        default=25, help='maximum-label-length')
+    parser.add_argument('--imgH', type=int, default=32,
                         help='the height of the input image')
-    parser.add_argument('--imgW', type=int, default=200,
+    parser.add_argument('--imgW', type=int, default=100,
                         help='the width of the input image')
     parser.add_argument('--rgb', action='store_true', help='use rgb input')
     parser.add_argument('--character', type=str,
@@ -264,7 +270,22 @@ if __name__ == '__main__':
     parser.add_argument('--hidden_size', type=int, default=256,
                         help='the size of the LSTM hidden state')
 
+    parser.add_argument('-d_word_vec', type=int, default=512)
+    parser.add_argument('-d_model', type=int, default=512)
+    parser.add_argument('-d_inner_hid', type=int, default=1024)
+    parser.add_argument('-d_k', type=int, default=128)
+    parser.add_argument('-d_v', type=int, default=64)
+
+    parser.add_argument('-n_head', type=int, default=8)
+    parser.add_argument('-n_layers', type=int, default=6)
+    parser.add_argument('-n_warmup_steps', type=int, default=16000)
+
+    parser.add_argument('-dropout', type=float, default=0.1)
+    parser.add_argument('-embs_share_weight', action='store_true')
+    parser.add_argument('-proj_share_weight', action='store_true')
+
     opt = parser.parse_args()
+    opt.proj_share_weight = True
     print(opt.eval_data)
     """ vocab / character number configuration """
     if opt.sensitive:

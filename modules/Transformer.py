@@ -74,13 +74,13 @@ class Encoder(nn.Module):
 
         super().__init__()
 
-        n_position = len_max_seq + 1 +2 # +2 for <s> and </s>
+        self.n_position = len_max_seq + 1
 
         # self.src_word_emb = nn.Embedding(
         #     n_src_vocab, d_word_vec, padding_idx=Constants.PAD)
 
         self.position_enc = nn.Embedding.from_pretrained(
-            get_sinusoid_encoding_table(n_position, d_word_vec, padding_idx=0),
+            get_sinusoid_encoding_table(self.n_position, d_word_vec, padding_idx=0),
             freeze=True)
 
         self.layer_stack = nn.ModuleList([
@@ -94,29 +94,24 @@ class Encoder(nn.Module):
         # -- Prepare masks
         # slf_attn_mask = get_attn_key_pad_mask(seq_k=src_seq, seq_q=src_seq)
         # non_pad_mask = get_non_pad_mask(src_seq)
-        len_q = src_seq.size(1)
-        slf_attn_mask = torch.zeros(
-            src_seq.size()[0:2]).to(src_seq.device).byte()
-        slf_attn_mask = slf_attn_mask.unsqueeze(1).expand(-1, len_q, -1)
-
-        non_pad_mask = torch.ones(
-            src_seq.size()[0:2]).unsqueeze(-1).to(src_seq.device).float()
 
         # -- Forward
         # enc_output = self.src_word_emb(src_seq) + self.position_enc(src_pos)
-        # print(src_seq.size(), self.position_enc(src_pos).size())
         enc_output = src_seq + self.position_enc(src_pos)
 
         for enc_layer in self.layer_stack:
             enc_output, enc_slf_attn = enc_layer(
                 enc_output,
-                non_pad_mask=non_pad_mask,
-                slf_attn_mask=slf_attn_mask)
+                non_pad_mask=None,
+                slf_attn_mask=None)
+                # non_pad_mask=non_pad_mask,
+                # slf_attn_mask=slf_attn_mask)
             if return_attns:
                 enc_slf_attn_list += [enc_slf_attn]
 
         if return_attns:
             return enc_output, enc_slf_attn_list
+
         return enc_output,
 
 
@@ -130,7 +125,7 @@ class Decoder(nn.Module):
             d_model, d_inner, dropout=0.1):
 
         super().__init__()
-        n_position = len_max_seq + 1 + 2 # +2 for <s> and </s>
+        n_position = len_max_seq + 1
 
         self.tgt_word_emb = nn.Embedding(
             n_tgt_vocab, d_word_vec)  # , padding_idx=Constants.PAD)
@@ -156,17 +151,8 @@ class Decoder(nn.Module):
         slf_attn_mask = (slf_attn_mask_keypad + slf_attn_mask_subseq).gt(0)
 
         # dec_enc_attn_mask = get_attn_key_pad_mask(seq_k=src_seq, seq_q=tgt_seq)
-        
-        # get_attn_key_pad_mask seq_k=src_seq, seq_q=tgt_seq
-        len_q = tgt_seq.size(1)
-        dec_enc_attn_mask = torch.zeros(
-            src_seq.size()[0:2]).to(src_seq.device).byte()
-        dec_enc_attn_mask = dec_enc_attn_mask.unsqueeze(
-            1).expand(-1, len_q, -1)
 
         # -- Forward
-        # print('dec_output', self.tgt_word_emb(tgt_seq).size(),
-            #   self.position_enc(tgt_pos).size())
         dec_output = self.tgt_word_emb(tgt_seq) + self.position_enc(tgt_pos)
 
         for dec_layer in self.layer_stack:
@@ -174,7 +160,8 @@ class Decoder(nn.Module):
                 dec_output, enc_output,
                 non_pad_mask=non_pad_mask,
                 slf_attn_mask=slf_attn_mask,
-                dec_enc_attn_mask=dec_enc_attn_mask)
+                dec_enc_attn_mask=None)
+                # dec_enc_attn_mask=dec_enc_attn_mask)
 
             if return_attns:
                 dec_slf_attn_list += [dec_slf_attn]
@@ -190,7 +177,7 @@ class Transformer(nn.Module):
 
     def __init__(
             self,
-            n_src_vocab, n_tgt_vocab, len_max_seq,
+            n_src_vocab, n_tgt_vocab, len_max_seq_enc, len_max_seq_dec,
             d_word_vec=512, d_model=512, d_inner=2048,
             n_layers=6, n_head=8, d_k=64, d_v=64, dropout=0.1,
             tgt_emb_prj_weight_sharing=True,
@@ -199,13 +186,13 @@ class Transformer(nn.Module):
         super().__init__()
         self.num_classes = n_tgt_vocab
         self.encoder = Encoder(
-            n_src_vocab=n_src_vocab, len_max_seq=len_max_seq,
+            n_src_vocab=n_src_vocab, len_max_seq=len_max_seq_enc,
             d_word_vec=d_word_vec, d_model=d_model, d_inner=d_inner,
             n_layers=n_layers, n_head=n_head, d_k=d_k, d_v=d_v,
             dropout=dropout)
 
         self.decoder = Decoder(
-            n_tgt_vocab=n_tgt_vocab, len_max_seq=len_max_seq,
+            n_tgt_vocab=n_tgt_vocab, len_max_seq=len_max_seq_dec,
             d_word_vec=d_word_vec, d_model=d_model, d_inner=d_inner,
             n_layers=n_layers, n_head=n_head, d_k=d_k, d_v=d_v,
             dropout=dropout)
@@ -233,13 +220,9 @@ class Transformer(nn.Module):
     def forward(self, src_seq, src_pos, tgt_seq, tgt_pos, batch_max_length, is_train=True):
         if is_train:
             tgt_seq, tgt_pos = tgt_seq[:, :-1], tgt_pos[:, :-1]
-            # print('tgt_seq remove index -1',tgt_seq.size(),tgt_pos.size())
             enc_output, *_ = self.encoder(src_seq, src_pos)
-            # print('aaa',tgt_seq.size(),tgt_pos.size(),src_seq.size(),enc_output.size())
             dec_output, *_ = self.decoder(tgt_seq, tgt_pos, src_seq, enc_output)
             seq_logit = self.tgt_word_prj(dec_output) * self.x_logit_scale
-            # return seq_logit.view(-1, seq_logit.size(2))
-            # print('istrain output',seq_logit.size())
             return seq_logit
         else:
             batch_size = src_seq.size(0)
@@ -248,33 +231,18 @@ class Transformer(nn.Module):
                 batch_size, num_steps, self.num_classes).fill_(0)
 
             enc_output, *_ = self.encoder(src_seq, src_pos)
-
-            pos = torch.arange(1,num_steps+2,dtype = torch.long,device ='cuda').expand(batch_size,-1)
+            if tgt_pos is not None:
+                pos = tgt_pos
+            else:
+                pos = torch.arange(1,num_steps+1,dtype = torch.long,device ='cuda').expand(batch_size,-1)
             ys = torch.zeros(batch_size, num_steps+1).long().cuda()
             ys[:, 0] = Constants.BOS
             for i in range(num_steps):
-                # print('ys, i', ys.size(),pos.size(), i, tgt_seq.size(),pos,ys)
-                # if i == num_steps-1:
-                #     break
                 out, *_ = self.decoder(ys[:,:i+1],
                                        pos[:,:i+1], src_seq, enc_output)
-                # print('out', out.size(),out[0])
                 prob = self.tgt_word_prj(out) * self.x_logit_scale
-                # print('prob', prob.size(),prob[:, i, :].size(),prob[:, i, :])
-                # if i > 0:
-                #     print('aaa',seq_logit[:, i-1, :] == prob[:, i-1, :])
-                # print('prob',prob.size(),torch.max(prob,dim=2)[1])
                 seq_logit[:, i, :] = prob[:, -1, :]
                 _, next_word = torch.max(prob[:, -1, :], dim=1)
-                # print('next_word', next_word.size())#,next_word)
                 ys[:,i+1] = next_word
-                # ys = torch.cat([ys,
-                #                 next_word.unsqueeze(1).long().cuda()], dim=1).contiguous()
-                # pos = torch.cat(
-                #     [pos, torch.zeros(batch_size, 1).fill_(i+2).long().cuda()], dim=1)
-                # print('ys, i last', ys.size(), i, tgt_seq.size(),pos.size(),seq_logit.size(),num_steps)
-            # exit()
-            # seq_logit = seq_logit.contiguous()
-            # print('test seq logit', seq_logit.size(),seq_logit.max())
-
+                
             return seq_logit

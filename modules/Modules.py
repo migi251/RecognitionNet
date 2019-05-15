@@ -15,6 +15,8 @@ class ScaledDotProductAttention(nn.Module):
 
     def forward(self, q, k, v, mask=None):
         # print('q,k ScaledProductAttention',q.size(),k.size(),v.size())
+        d_k = k.size(-1) # get the size of the key
+        assert q.size(-1) == d_k
         attn = torch.bmm(q, k.transpose(1, 2))
         attn = attn / self.temperature
 

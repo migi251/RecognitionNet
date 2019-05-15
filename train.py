@@ -37,13 +37,12 @@ def cal_performance(pred, gold, smoothing=False):
 
     loss = cal_loss(pred, gold, smoothing)
     # print('cal_performance pred',pred.size(),gold.size())
-    pred = pred.max(1)[1]
+    # pred = pred.max(1)[1]
     # print('pred max',pred.size())
-    gold = gold.contiguous().view(-1)
-    non_pad_mask = gold.ne(Constants.PAD)
-    n_correct = pred.eq(gold)
-    n_correct = n_correct.masked_select(non_pad_mask).sum().item()
-
+    # gold = gold.contiguous().view(-1)
+    # non_pad_mask = gold.ne(Constants.PAD)
+    # n_correct = pred.eq(gold)
+    # n_correct = n_correct.masked_select(non_pad_mask).sum().item()
     return loss
 
 
@@ -62,7 +61,7 @@ def cal_loss(pred, gold, smoothing):
 
         non_pad_mask = gold.ne(Constants.PAD)
         loss = -(one_hot * log_prb).sum(dim=1)
-        loss = loss.masked_select(non_pad_mask).sum()  # average later
+        loss = loss.masked_select(non_pad_mask).mean()
     else:
         loss = F.cross_entropy(pred, gold, ignore_index=Constants.PAD, reduction='mean')
 
@@ -149,18 +148,18 @@ def train(opt):
     if opt.adam:
         optimizer = optim.Adam(filtered_parameters,
                                lr=opt.lr, betas=(opt.beta1, 0.999))
-    elif 'Transformer' in opt.Prediction:
+    elif 'Transformer' in opt.Prediction and opt.use_scheduled_optim:
         optimizer = ScheduledOptim(optim.Adam(filtered_parameters,
             betas=(0.9, 0.98), eps=1e-09),
         opt.d_model, opt.n_warmup_steps)
     else:
         optimizer = optim.Adadelta(
             filtered_parameters, lr=opt.lr, rho=opt.rho, eps=opt.eps)
-    print("Optimizer:")
-    print(optimizer)
+    # print("Optimizer:")
+    # print(optimizer)
 
     """ final options """
-    # print(opt)
+    print(opt)
     with open(f'./saved_models/{opt.experiment_name}/opt.txt', 'a') as opt_file:
         opt_log = '------------ Options -------------\n'
         args = vars(opt)
@@ -179,11 +178,9 @@ def train(opt):
     start_time = time.time()
     best_accuracy = -1
     best_norm_ED = 1e+6
-    i = start_iter
-
-    # while(True):
+    if 'Transformer' in opt.Prediction:
+        optimizer.n_current_steps = start_iter
     for i in tqdm(range(start_iter, opt.num_iter)):
-        # train part
         for p in model.parameters():
             p.requires_grad = True
 
@@ -194,7 +191,6 @@ def train(opt):
         elif 'Transformer' in opt.Prediction:
             text, length, text_pos = converter.encode(
                 cpu_texts, opt.batch_max_length)
-            # print(text[0], text_pos[0], length[0], cpu_texts[0], text.size())
         else:
             text, length = converter.encode(cpu_texts, opt.batch_max_length)
         batch_size = image.size(0)
@@ -205,7 +201,6 @@ def train(opt):
             preds = preds.permute(1, 0, 2)  # to use CTCLoss format
             cost = criterion(preds, text, preds_size, length)
         elif 'Transformer' in opt.Prediction:
-            # print(image.size())
             preds = model(image, text, tgt_pos=text_pos)
             target = text[:, 1:]  # without <s> Symbol
             cost = criterion(
@@ -219,16 +214,13 @@ def train(opt):
         model.zero_grad()
         cost.backward()
         # gradient clipping with 5 (Default)
-        
-        if 'Transformer' in opt.Prediction:
+        torch.nn.utils.clip_grad_norm_(model.parameters(), opt.grad_clip)
+        if 'Transformer' in opt.Prediction and opt.use_scheduled_optim:
             optimizer.step_and_update_lr()
         else:
-            torch.nn.utils.clip_grad_norm_(model.parameters(), opt.grad_clip)
             optimizer.step()
 
         loss_avg.add(cost)
-        if i %50 ==0:
-            print('loss',i,loss_avg.val())
         # validation part
         if i > 0 and i % opt.valInterval == 0:
             elapsed_time = time.time() - start_time
@@ -274,15 +266,10 @@ def train(opt):
                 print(best_model_log)
                 log.write(best_model_log + '\n')
 
-        # save model per 1e+5 iter.
-        if (i + 1) % 1e+5 == 0:
+        # save model per 1e+4 iter.
+        if (i + 1) % 1e+4 == 0:
             torch.save(
                 model.state_dict(), f'./saved_models/{opt.experiment_name}/iter_{i+1}.pth')
-
-        if i == opt.num_iter:
-            print('end the training')
-            sys.exit()
-        # i += 1
 
 
 if __name__ == '__main__':
@@ -298,10 +285,10 @@ if __name__ == '__main__':
     parser.add_argument('--workers', type=int,
                         help='number of data loading workers', default=4)
     parser.add_argument('--batch_size', type=int,
-                        default=150, help='input batch size')
+                        default=128, help='input batch size')
     parser.add_argument('--num_iter', type=int, default=300000,
                         help='number of iterations to train for')
-    parser.add_argument('--valInterval', type=int, default=2000,
+    parser.add_argument('--valInterval', type=int, default=100,
                         help='Interval between each validation')
     parser.add_argument('--continue_model', default='',
                         help="path to model to continue training")
@@ -343,7 +330,7 @@ if __name__ == '__main__':
     parser.add_argument('--SequenceModeling', type=str,
                         required=True, help='SequenceModeling stage. None|BiLSTM')
     parser.add_argument('--Prediction', type=str,
-                        required=True, help='Prediction stage. CTC|Attn')
+                        required=True, help='Prediction stage. CTC|Attn|Transformer')
     parser.add_argument('--num_fiducial', type=int, default=20,
                         help='number of fiducial points of TPS-STN')
     parser.add_argument('--input_channel', type=int, default=1,
@@ -352,25 +339,25 @@ if __name__ == '__main__':
                         help='the number of output channel of Feature extractor')
     parser.add_argument('--hidden_size', type=int, default=256,
                         help='the size of the LSTM hidden state')
-
+    """ Transformer """
     parser.add_argument('-d_word_vec', type=int, default=512)
     parser.add_argument('-d_model', type=int, default=512)
     parser.add_argument('-d_inner_hid', type=int, default=1024)
-    parser.add_argument('-d_k', type=int, default=128)
+    parser.add_argument('-d_k', type=int, default=64)
     parser.add_argument('-d_v', type=int, default=64)
 
     parser.add_argument('-n_head', type=int, default=8)
     parser.add_argument('-n_layers', type=int, default=6)
-    parser.add_argument('-n_warmup_steps', type=int, default=16000)
+    parser.add_argument('-n_warmup_steps', type=int, default=2000)
 
     parser.add_argument('-dropout', type=float, default=0.1)
     parser.add_argument('-embs_share_weight', action='store_true')
     parser.add_argument('-proj_share_weight', action='store_true')
+    parser.add_argument('-use_scheduled_optim', action='store_true')
 
     opt = parser.parse_args()
-    opt.proj_share_weight = True
-    # opt.adam = True
-    # opt.lr = 0.001
+    # opt.proj_share_weight = True
+    opt.use_scheduled_optim = True
 
     if not opt.experiment_name:
         opt.experiment_name = f'{opt.Transformation}-{opt.FeatureExtraction}-{opt.SequenceModeling}-{opt.Prediction}'
