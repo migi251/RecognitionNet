@@ -1,0 +1,17 @@
+{
+	"folders": [
+		{
+			"path": "."
+		},
+		{
+			"path": "/home/migi/Workspace/DATN/deep-text-recognition-benchmark"
+		},
+		{
+			"path": "/home/migi/Workspace/DATN/attention-is-all-you-need-pytorch"
+		},
+		{
+			"path": "/home/migi/Workspace/DATN/NRTR"
+		}
+	],
+	"settings": {}
+}
