@@ -188,7 +188,6 @@ def test(opt):
     print('model input parameters', opt.imgH, opt.imgW, opt.num_fiducial, opt.input_channel, opt.output_channel,
           opt.hidden_size, opt.num_class, opt.batch_max_length, opt.Transformation, opt.FeatureExtraction,
           opt.SequenceModeling, opt.Prediction)
-    model = torch.nn.DataParallel(model).cuda()
 
     # load model
     if opt.saved_model != '':
@@ -199,6 +198,9 @@ def test(opt):
         else:
             model.load_state_dict(checkpoint)
         opt.experiment_name = '_'.join(opt.saved_model.split('/')[1:])
+
+    #parallel model
+    model = torch.nn.DataParallel(model).cuda()
     # print(model)
 
     """ keep evaluation model and result logs """
