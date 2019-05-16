@@ -293,7 +293,6 @@ if __name__ == '__main__':
     parser.add_argument('-use_scheduled_optim', action='store_true')
 
     opt = parser.parse_args()
-    opt.proj_share_weight = True
     print(opt.eval_data)
     """ vocab / character number configuration """
     if opt.sensitive:
