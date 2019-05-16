@@ -181,7 +181,7 @@ def train(opt):
     best_norm_ED = 1e+6
     pickle.load = partial(pickle.load, encoding="latin1")
     pickle.Unpickler = partial(pickle.Unpickler, encoding="latin1")
-    if opt.load_weights and check_isfile(opt.load_weights):
+    if opt.load_weights !='' and check_isfile(opt.load_weights):
         # load pretrained weights but ignore layers that don't match in size
         checkpoint = torch.load(args.load_weights, pickle_module=pickle)
         if type(checkpoint) == dict:
@@ -208,6 +208,10 @@ def train(opt):
                 for k, v in state.items():
                     if isinstance(v, torch.Tensor):
                         state[k] = v.cuda()
+        if 'best_accuracy' in checkpoint.keys():
+            best_accuracy = checkpoint['best_accuracy']
+        if 'best_norm_ED' in checkpoint.keys():
+            best_norm_ED = checkpoint['best_norm_ED']
         del checkpoint
         torch.cuda.empty_cache()
     if 'Transformer' in opt.Prediction:
