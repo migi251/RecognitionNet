@@ -20,6 +20,10 @@ from tqdm import tqdm
 from modules import Constants
 import torch.nn.functional as F
 from Optim import ScheduledOptim
+from iotools import save_checkpoint,check_isfile
+import pickle
+from functools import partial
+
 
 def count_num_param(model):
     num_param = sum(p.numel() for p in model.parameters()) / 1e+06
@@ -29,8 +33,10 @@ def count_num_param(model):
 
     if hasattr(model, 'classifier') and isinstance(model.classifier, nn.Module):
         # we ignore the classifier because it is unused at test time
-        num_param -= sum(p.numel() for p in model.classifier.parameters()) / 1e+06
+        num_param -= sum(p.numel()
+                         for p in model.classifier.parameters()) / 1e+06
     return num_param
+
 
 def cal_performance(pred, gold, smoothing=False):
     ''' Apply label smoothing if needed '''
@@ -63,7 +69,8 @@ def cal_loss(pred, gold, smoothing):
         loss = -(one_hot * log_prb).sum(dim=1)
         loss = loss.masked_select(non_pad_mask).mean()
     else:
-        loss = F.cross_entropy(pred, gold, ignore_index=Constants.PAD, reduction='mean')
+        loss = F.cross_entropy(
+            pred, gold, ignore_index=Constants.PAD, reduction='mean')
 
     return loss
 
@@ -118,10 +125,7 @@ def train(opt):
     # data parallel for multi-GPU
     model = torch.nn.DataParallel(model).cuda()
     model.train()
-    if opt.continue_model != '':
-        print(f'loading pretrained model from {opt.continue_model}')
-        model.load_state_dict(torch.load(opt.continue_model))
-    print("Model size:",count_num_param(model), 'M')
+    print("Model size:", count_num_param(model), 'M')
     # print(model)
 
     """ setup loss """
@@ -150,8 +154,8 @@ def train(opt):
                                lr=opt.lr, betas=(opt.beta1, 0.999))
     elif 'Transformer' in opt.Prediction and opt.use_scheduled_optim:
         optimizer = ScheduledOptim(optim.Adam(filtered_parameters,
-            betas=(0.9, 0.98), eps=1e-09),
-        opt.d_model, opt.n_warmup_steps)
+                                              betas=(0.9, 0.98), eps=1e-09),
+                                   opt.d_model, opt.n_warmup_steps)
     else:
         optimizer = optim.Adadelta(
             filtered_parameters, lr=opt.lr, rho=opt.rho, eps=opt.eps)
@@ -171,13 +175,41 @@ def train(opt):
 
     """ start training """
     start_iter = 0
-    if opt.continue_model != '':
-        start_iter = int(opt.continue_model.split('_')[-1].split('.')[0])
-        print(f'continue to train, start_iter: {start_iter}')
 
     start_time = time.time()
     best_accuracy = -1
     best_norm_ED = 1e+6
+    pickle.load = partial(pickle.load, encoding="latin1")
+    pickle.Unpickler = partial(pickle.Unpickler, encoding="latin1")
+    if opt.load_weights and check_isfile(opt.load_weights):
+        # load pretrained weights but ignore layers that don't match in size
+        checkpoint = torch.load(args.load_weights, pickle_module=pickle)
+        if type(checkpoint) == dict:
+            pretrain_dict = checkpoint['state_dict']
+        else:
+            pretrain_dict = checkpoint
+        model_dict = model.state_dict()
+        pretrain_dict = {k: v for k, v in pretrain_dict.items(
+        ) if k in model_dict and model_dict[k].size() == v.size()}
+        model_dict.update(pretrain_dict)
+        model.load_state_dict(model_dict)
+        print("Loaded pretrained weights from '{}'".format(args.load_weights))
+        del checkpoint
+        torch.cuda.empty_cache()
+    if opt.continue_model != '':
+        print(f'loading pretrained model from {opt.continue_model}')
+        checkpoint = torch.load(opt.continue_model)
+        model.load_state_dict(checkpoint['state_dict'])
+        start_iter = checkpoint['step'] +1
+        print('continue to train start_iter: ', start_iter)
+        if 'optimizer' in checkpoint.keys():
+            optimizer.load_state_dict(checkpoint['optimizer'])
+            for state in optimizer.state.values():
+                for k, v in state.items():
+                    if isinstance(v, torch.Tensor):
+                        state[k] = v.cuda()
+        del checkpoint
+        torch.cuda.empty_cache()
     if 'Transformer' in opt.Prediction:
         optimizer.n_current_steps = start_iter
     for i in tqdm(range(start_iter, opt.num_iter)):
@@ -213,11 +245,12 @@ def train(opt):
 
         model.zero_grad()
         cost.backward()
-        # gradient clipping with 5 (Default)
-        torch.nn.utils.clip_grad_norm_(model.parameters(), opt.grad_clip)
+
         if 'Transformer' in opt.Prediction and opt.use_scheduled_optim:
             optimizer.step_and_update_lr()
         else:
+            # gradient clipping with 5 (Default)
+            torch.nn.utils.clip_grad_norm_(model.parameters(), opt.grad_clip)
             optimizer.step()
 
         loss_avg.add(cost)
@@ -233,8 +266,9 @@ def train(opt):
                 loss_avg.reset()
 
                 model.eval()
-                valid_loss, current_accuracy, current_norm_ED, preds, gts, infer_time, length_of_data = validation(
-                    model, criterion, valid_loader, converter, opt)
+                with torch.no_grad():
+                    valid_loss, current_accuracy, current_norm_ED, preds, gts, infer_time, length_of_data = validation(
+                        model, criterion, valid_loader, converter, opt)
                 model.train()
 
                 for pred, gt in zip(preds[:5], gts[:5]):
@@ -256,18 +290,32 @@ def train(opt):
                 # keep best accuracy model
                 if current_accuracy > best_accuracy:
                     best_accuracy = current_accuracy
-                    torch.save(
-                        model.state_dict(), f'./saved_models/{opt.experiment_name}/best_accuracy.pth')
+                    state_dict = model.module.state_dict()
+                    save_checkpoint({'best_accuracy': best_accuracy,
+                                     'state_dict': state_dict,
+                                     }, False, f'./saved_models/{opt.experiment_name}/best_accuracy.pth')
                 if current_norm_ED < best_norm_ED:
                     best_norm_ED = current_norm_ED
-                    torch.save(
-                        model.state_dict(), f'./saved_models/{opt.experiment_name}/best_norm_ED.pth')
+                    state_dict = model.module.state_dict()
+                    save_checkpoint({'best_norm_ED': best_norm_ED,
+                                     'state_dict': state_dict,
+                                     }, False, f'./saved_models/{opt.experiment_name}/best_norm_ED.pth')
+                    # torch.save(
+                    #     model.state_dict(), f'./saved_models/{opt.experiment_name}/best_norm_ED.pth')
                 best_model_log = f'best_accuracy: {best_accuracy:0.3f}, best_norm_ED: {best_norm_ED:0.2f}'
                 print(best_model_log)
                 log.write(best_model_log + '\n')
 
         # save model per 1e+4 iter.
         if (i + 1) % 1e+4 == 0:
+            state_dict = model.module.state_dict()
+            optimizer_state_dict = optimizer.state_dict()
+            save_checkpoint({'state_dict': state_dict,
+                             'optimizer':optimizer_state_dict,
+                             'step': i,
+                             'best_accuracy': best_accuracy,
+                             'best_norm_ED': best_norm_ED,
+                            }, False, f'./saved_models/{opt.experiment_name}/best_norm_ED.pth')
             torch.save(
                 model.state_dict(), f'./saved_models/{opt.experiment_name}/iter_{i+1}.pth')
 
@@ -276,9 +324,9 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--experiment_name',
                         help='Where to store logs and models')
-    parser.add_argument('--train_data', default = 'data_lmdb_release/training',
+    parser.add_argument('--train_data', default='data_lmdb_release/training',
                         help='path to training dataset')
-    parser.add_argument('--valid_data', default = 'data_lmdb_release/validation',
+    parser.add_argument('--valid_data', default='data_lmdb_release/validation',
                         help='path to validation dataset')
     parser.add_argument('--manualSeed', type=int,
                         default=1111, help='for random seed setting')
@@ -286,12 +334,14 @@ if __name__ == '__main__':
                         help='number of data loading workers', default=4)
     parser.add_argument('--batch_size', type=int,
                         default=128, help='input batch size')
-    parser.add_argument('--num_iter', type=int, default=300000,
+    parser.add_argument('--num_iter', type=int, default=20000,
                         help='number of iterations to train for')
     parser.add_argument('--valInterval', type=int, default=100,
                         help='Interval between each validation')
     parser.add_argument('--continue_model', default='',
                         help="path to model to continue training")
+    parser.add_argument('--load_weights', default='',
+                        help="path to model to load pretrain")
     parser.add_argument('--adam', action='store_true',
                         help='Whether to use adam (default is Adadelta)')
     parser.add_argument('--lr', type=float, default=1,
@@ -347,9 +397,9 @@ if __name__ == '__main__':
     parser.add_argument('-d_v', type=int, default=64)
 
     parser.add_argument('-n_head', type=int, default=8)
-    parser.add_argument('-n_layers_enc', type=int, default=12)
+    parser.add_argument('-n_layers_enc', type=int, default=6)
     parser.add_argument('-n_layers_dec', type=int, default=6)
-    parser.add_argument('-n_warmup_steps', type=int, default=2000)
+    parser.add_argument('-n_warmup_steps', type=int, default=5000)
 
     parser.add_argument('-dropout', type=float, default=0.1)
     parser.add_argument('-embs_share_weight', action='store_true')
