@@ -273,16 +273,18 @@ if __name__ == '__main__':
     parser.add_argument('-d_word_vec', type=int, default=512)
     parser.add_argument('-d_model', type=int, default=512)
     parser.add_argument('-d_inner_hid', type=int, default=1024)
-    parser.add_argument('-d_k', type=int, default=128)
+    parser.add_argument('-d_k', type=int, default=64)
     parser.add_argument('-d_v', type=int, default=64)
 
     parser.add_argument('-n_head', type=int, default=8)
-    parser.add_argument('-n_layers', type=int, default=6)
-    parser.add_argument('-n_warmup_steps', type=int, default=16000)
+    parser.add_argument('-n_layers_enc', type=int, default=6)
+    parser.add_argument('-n_layers_dec', type=int, default=6)
+    parser.add_argument('-n_warmup_steps', type=int, default=5000)
 
     parser.add_argument('-dropout', type=float, default=0.1)
     parser.add_argument('-embs_share_weight', action='store_true')
     parser.add_argument('-proj_share_weight', action='store_true')
+    parser.add_argument('-use_scheduled_optim', action='store_true')
 
     opt = parser.parse_args()
     opt.proj_share_weight = True
