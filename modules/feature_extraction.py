@@ -1,5 +1,6 @@
 import torch.nn as nn
 import torch.nn.functional as F
+import torch
 
 
 class VGG_FeatureExtractor(nn.Module):
@@ -105,7 +106,7 @@ class GRCL_unit(nn.Module):
     def forward(self, wgf_u, wgr_x, wf_u, wr_x):
         G_first_term = self.BN_gfu(wgf_u)
         G_second_term = self.BN_grx(wgr_x)
-        G = F.sigmoid(G_first_term + G_second_term)
+        G = torch.sigmoid(G_first_term + G_second_term)
 
         x_first_term = self.BN_fu(wf_u)
         x_second_term = self.BN_Gx(self.BN_rx(wr_x) * G)

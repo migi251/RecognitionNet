@@ -122,12 +122,6 @@ def train(opt):
                 param.data.fill_(1)
             continue
 
-    # data parallel for multi-GPU
-    model = torch.nn.DataParallel(model).cuda()
-    model.train()
-    print("Model size:", count_num_param(model), 'M')
-    # print(model)
-
     """ setup loss """
     if 'CTC' in opt.Prediction:
         criterion = torch.nn.CTCLoss(zero_infinity=True).cuda()
@@ -153,8 +147,9 @@ def train(opt):
         optimizer = optim.Adam(filtered_parameters,
                                lr=opt.lr, betas=(opt.beta1, 0.999))
     elif 'Transformer' in opt.Prediction and opt.use_scheduled_optim:
-        optimizer = ScheduledOptim(optim.Adam(filtered_parameters,
-                                              betas=(0.9, 0.98), eps=1e-09),
+        optimizer = optim.Adam(filtered_parameters,
+                                              betas=(0.9, 0.98), eps=1e-09)
+        optimizer_schedule = ScheduledOptim(optimizer,
                                    opt.d_model, opt.n_warmup_steps)
     else:
         optimizer = optim.Adadelta(
@@ -183,7 +178,7 @@ def train(opt):
     pickle.Unpickler = partial(pickle.Unpickler, encoding="latin1")
     if opt.load_weights !='' and check_isfile(opt.load_weights):
         # load pretrained weights but ignore layers that don't match in size
-        checkpoint = torch.load(args.load_weights, pickle_module=pickle)
+        checkpoint = torch.load(opt.load_weights, pickle_module=pickle)
         if type(checkpoint) == dict:
             pretrain_dict = checkpoint['state_dict']
         else:
@@ -193,12 +188,13 @@ def train(opt):
         ) if k in model_dict and model_dict[k].size() == v.size()}
         model_dict.update(pretrain_dict)
         model.load_state_dict(model_dict)
-        print("Loaded pretrained weights from '{}'".format(args.load_weights))
+        print("Loaded pretrained weights from '{}'".format(opt.load_weights))
         del checkpoint
         torch.cuda.empty_cache()
     if opt.continue_model != '':
         print(f'loading pretrained model from {opt.continue_model}')
         checkpoint = torch.load(opt.continue_model)
+        print(checkpoint.keys())
         model.load_state_dict(checkpoint['state_dict'])
         start_iter = checkpoint['step'] +1
         print('continue to train start_iter: ', start_iter)
@@ -214,7 +210,11 @@ def train(opt):
             best_norm_ED = checkpoint['best_norm_ED']
         del checkpoint
         torch.cuda.empty_cache()
-    if 'Transformer' in opt.Prediction:
+    # data parallel for multi-GPU
+    model = torch.nn.DataParallel(model).cuda()
+    model.train()
+    print("Model size:", count_num_param(model), 'M')
+    if 'Transformer' in opt.Prediction and opt.use_scheduled_optim:
         optimizer.n_current_steps = start_iter
     for i in tqdm(range(start_iter, opt.num_iter)):
         for p in model.parameters():
@@ -251,7 +251,9 @@ def train(opt):
         cost.backward()
 
         if 'Transformer' in opt.Prediction and opt.use_scheduled_optim:
-            optimizer.step_and_update_lr()
+            optimizer_schedule.step_and_update_lr()
+        elif 'Transformer' in opt.Prediction:
+            optimizer.step()
         else:
             # gradient clipping with 5 (Default)
             torch.nn.utils.clip_grad_norm_(model.parameters(), opt.grad_clip)
@@ -259,14 +261,14 @@ def train(opt):
 
         loss_avg.add(cost)
         # validation part
-        if i > 0 and i % opt.valInterval == 0:
+        if i > 0 and (i+1) % opt.valInterval == 0:
             elapsed_time = time.time() - start_time
             print(
-                f'[{i}/{opt.num_iter}] Loss: {loss_avg.val():0.5f} elapsed_time: {elapsed_time:0.5f}')
+                f'[{i+1}/{opt.num_iter}] Loss: {loss_avg.val():0.5f} elapsed_time: {elapsed_time:0.5f}')
             # for log
             with open(f'./saved_models/{opt.experiment_name}/log_train.txt', 'a') as log:
                 log.write(
-                    f'[{i}/{opt.num_iter}] Loss: {loss_avg.val():0.5f} elapsed_time: {elapsed_time:0.5f}\n')
+                    f'[{i+1}/{opt.num_iter}] Loss: {loss_avg.val():0.5f} elapsed_time: {elapsed_time:0.5f}\n')
                 loss_avg.reset()
 
                 model.eval()
@@ -286,7 +288,7 @@ def train(opt):
                     log.write(
                         f'{pred:20s}, gt: {gt:20s},   {str(pred == gt)}\n')
 
-                valid_log = f'[{i}/{opt.num_iter}] valid loss: {valid_loss:0.5f}'
+                valid_log = f'[{i+1}/{opt.num_iter}] valid loss: {valid_loss:0.5f}'
                 valid_log += f' accuracy: {current_accuracy:0.3f}, norm_ED: {current_norm_ED:0.2f}'
                 print(valid_log)
                 log.write(valid_log + '\n')
@@ -310,8 +312,8 @@ def train(opt):
                 print(best_model_log)
                 log.write(best_model_log + '\n')
 
-        # save model per 1e+4 iter.
-        if (i + 1) % 1e+4 == 0:
+        # save model per 1000 iter.
+        if (i + 1) % 100 == 0:
             state_dict = model.module.state_dict()
             optimizer_state_dict = optimizer.state_dict()
             save_checkpoint({'state_dict': state_dict,
@@ -319,9 +321,7 @@ def train(opt):
                              'step': i,
                              'best_accuracy': best_accuracy,
                              'best_norm_ED': best_norm_ED,
-                            }, False, f'./saved_models/{opt.experiment_name}/best_norm_ED.pth')
-            torch.save(
-                model.state_dict(), f'./saved_models/{opt.experiment_name}/iter_{i+1}.pth')
+                            }, False, f'./saved_models/{opt.experiment_name}/iter_{i+1}.pth')
 
 
 if __name__ == '__main__':
@@ -338,9 +338,9 @@ if __name__ == '__main__':
                         help='number of data loading workers', default=4)
     parser.add_argument('--batch_size', type=int,
                         default=128, help='input batch size')
-    parser.add_argument('--num_iter', type=int, default=20000,
+    parser.add_argument('--num_iter', type=int, default=300000,
                         help='number of iterations to train for')
-    parser.add_argument('--valInterval', type=int, default=100,
+    parser.add_argument('--valInterval', type=int, default=1000,
                         help='Interval between each validation')
     parser.add_argument('--continue_model', default='',
                         help="path to model to continue training")
@@ -378,32 +378,32 @@ if __name__ == '__main__':
                         help='for sensitive character mode')
     """ Model Architecture """
     parser.add_argument('--Transformation', type=str,
-                        required=True, help='Transformation stage. None|TPS')
-    parser.add_argument('--FeatureExtraction', type=str, required=True,
+                        required=False, help='Transformation stage. None|TPS')
+    parser.add_argument('--FeatureExtraction', type=str, required=False,
                         help='FeatureExtraction stage. VGG|RCNN|ResNet')
     parser.add_argument('--SequenceModeling', type=str,
-                        required=True, help='SequenceModeling stage. None|BiLSTM')
+                        required=False, help='SequenceModeling stage. None|BiLSTM')
     parser.add_argument('--Prediction', type=str,
-                        required=True, help='Prediction stage. CTC|Attn|Transformer')
+                        required=False, help='Prediction stage. CTC|Attn|Transformer')
     parser.add_argument('--num_fiducial', type=int, default=20,
                         help='number of fiducial points of TPS-STN')
     parser.add_argument('--input_channel', type=int, default=1,
                         help='the number of input channel of Feature extractor')
     parser.add_argument('--output_channel', type=int, default=512,
                         help='the number of output channel of Feature extractor')
-    parser.add_argument('--hidden_size', type=int, default=256,
+    parser.add_argument('--hidden_size', type=int, default=1024,
                         help='the size of the LSTM hidden state')
     """ Transformer """
     parser.add_argument('-d_word_vec', type=int, default=512)
     parser.add_argument('-d_model', type=int, default=512)
-    parser.add_argument('-d_inner_hid', type=int, default=1024)
+    parser.add_argument('-d_inner_hid', type=int, default=512)
     parser.add_argument('-d_k', type=int, default=64)
     parser.add_argument('-d_v', type=int, default=64)
 
     parser.add_argument('-n_head', type=int, default=8)
     parser.add_argument('-n_layers_enc', type=int, default=6)
     parser.add_argument('-n_layers_dec', type=int, default=6)
-    parser.add_argument('-n_warmup_steps', type=int, default=5000)
+    parser.add_argument('-n_warmup_steps', type=int, default=16000)
 
     parser.add_argument('-dropout', type=float, default=0.1)
     parser.add_argument('-embs_share_weight', action='store_true')
@@ -412,8 +412,20 @@ if __name__ == '__main__':
 
     opt = parser.parse_args()
     # opt.proj_share_weight = True
-    opt.use_scheduled_optim = True
-
+    # opt.use_scheduled_optim = True
+    # opt.adam = True
+    # opt.lr = 1e-4
+    opt.Transformation = 'None'
+    opt.FeatureExtraction = 'RCNN'
+    opt.SequenceModeling = 'None'
+    opt.Prediction = 'Transformer'
+    opt.select_data = 'gene_data'
+    opt.batch_ratio = '1'
+    opt.batch_size = 64
+    # opt.valid_data = 'data_lmdb_release/validation_2'
+    # opt.continue_model = './saved_models/None-ResNet-None-Transformer-Seed1111/iter_300.pth'
+    # opt.load_weights = './saved_models/None-ResNet-None-Transformer-Seed1111/best_accuracy_14000.pth'
+    opt.experiment_name = 'demo'
     if not opt.experiment_name:
         opt.experiment_name = f'{opt.Transformation}-{opt.FeatureExtraction}-{opt.SequenceModeling}-{opt.Prediction}'
         opt.experiment_name += f'-Seed{opt.manualSeed}'
