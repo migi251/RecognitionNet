@@ -210,6 +210,9 @@ def test(opt):
     """ setup loss """
     if 'CTC' in opt.Prediction:
         criterion = torch.nn.CTCLoss(zero_infinity=True).cuda()
+    elif 'Transformer' in opt.Prediction:
+        # ignore PAD token = ignore index 2
+        criterion = torch.nn.CrossEntropyLoss(ignore_index=2).cuda()
     else:
         # ignore [GO] token = ignore index 0
         criterion = torch.nn.CrossEntropyLoss(ignore_index=0).cuda()
@@ -275,7 +278,7 @@ if __name__ == '__main__':
                         help='the number of output channel of Feature extractor')
     parser.add_argument('--hidden_size', type=int, default=256,
                         help='the size of the LSTM hidden state')
-
+    """Transformer"""
     parser.add_argument('-d_word_vec', type=int, default=512)
     parser.add_argument('-d_model', type=int, default=512)
     parser.add_argument('-d_inner_hid', type=int, default=1024)
