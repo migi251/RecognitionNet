@@ -411,21 +411,6 @@ if __name__ == '__main__':
     parser.add_argument('-use_scheduled_optim', action='store_true')
 
     opt = parser.parse_args()
-    # opt.proj_share_weight = True
-    # opt.use_scheduled_optim = True
-    # opt.adam = True
-    # opt.lr = 1e-4
-    opt.Transformation = 'None'
-    opt.FeatureExtraction = 'RCNN'
-    opt.SequenceModeling = 'None'
-    opt.Prediction = 'Transformer'
-    opt.select_data = 'gene_data'
-    opt.batch_ratio = '1'
-    opt.batch_size = 64
-    # opt.valid_data = 'data_lmdb_release/validation_2'
-    # opt.continue_model = './saved_models/None-ResNet-None-Transformer-Seed1111/iter_300.pth'
-    # opt.load_weights = './saved_models/None-ResNet-None-Transformer-Seed1111/best_accuracy_14000.pth'
-    opt.experiment_name = 'demo'
     if not opt.experiment_name:
         opt.experiment_name = f'{opt.Transformation}-{opt.FeatureExtraction}-{opt.SequenceModeling}-{opt.Prediction}'
         opt.experiment_name += f'-Seed{opt.manualSeed}'
